@@ -2,6 +2,7 @@ import json
 import time
 import threading
 import queue        
+from concurrent.futures import ThreadPoolExecutor
 
 from django.http import JsonResponse
 from django.db import transaction
@@ -224,3 +225,178 @@ def place_order_async(request):
         return JsonResponse({"error": "Product or Stock not found"}, status=404)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
+
+# ============================================================
+# Requirement 2: Resource Management & Capacity Control
+# Payment processing simulation with and without Thread Pool
+# ============================================================
+
+PAYMENT_SIMULATION_SECONDS = 5
+PAYMENT_POOL_WORKERS = 5
+PAYMENT_MEMORY_MB = 30
+PAYMENT_CPU_SECONDS = 0.8
+
+payment_executor = ThreadPoolExecutor(max_workers=PAYMENT_POOL_WORKERS)
+
+payment_metrics_lock = threading.Lock()
+
+payment_metrics = {
+    "uncontrolled_active": 0,
+    "uncontrolled_max_active": 0,
+    "uncontrolled_total_requests": 0,
+
+    "controlled_active": 0,
+    "controlled_max_active": 0,
+    "controlled_total_requests": 0,
+}
+
+def _consume_cpu_for_seconds(seconds):
+    """
+    Simulates a short CPU workload.
+
+    This is intentionally limited to a small duration so the laptop
+    remains safe during testing.
+    """
+    end_time = time.time() + seconds
+    checksum = 0
+
+    while time.time() < end_time:
+        for i in range(10_000):
+            checksum += (i * i) % 97
+
+    return checksum
+
+
+def _simulate_payment_processing(mode):
+
+    active_key = f"{mode}_active"
+    max_key = f"{mode}_max_active"
+    total_key = f"{mode}_total_requests"
+
+    with payment_metrics_lock:
+        payment_metrics[total_key] += 1
+        payment_metrics[active_key] += 1
+
+        if payment_metrics[active_key] > payment_metrics[max_key]:
+            payment_metrics[max_key] = payment_metrics[active_key]
+
+        current_active = payment_metrics[active_key]
+
+    simulated_memory = bytearray(PAYMENT_MEMORY_MB * 1024 * 1024)
+
+    for i in range(0, len(simulated_memory), 4096):
+        simulated_memory[i] = i % 256
+
+    time.sleep(PAYMENT_SIMULATION_SECONDS)
+
+    checksum = _consume_cpu_for_seconds(PAYMENT_CPU_SECONDS)
+
+    with payment_metrics_lock:
+        payment_metrics[active_key] -= 1
+
+    return {
+        "payment_status": "success",
+        "mode": mode,
+        "active_payment_tasks_when_started": current_active,
+        "simulation_seconds": PAYMENT_SIMULATION_SECONDS,
+        "simulated_memory_mb_per_task": PAYMENT_MEMORY_MB,
+        "simulated_cpu_seconds": PAYMENT_CPU_SECONDS,
+        "checksum": checksum,
+    }
+
+
+@csrf_exempt
+def process_payment_uncontrolled(request):
+    """
+    BEFORE resource management:
+    Every incoming request executes the simulated payment directly.
+
+    Under high concurrency, many heavy payment operations may run at the same time.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+
+    start = time.time()
+
+    result = _simulate_payment_processing("uncontrolled")
+
+    response_time = round(time.time() - start, 3)
+
+    return JsonResponse({
+        "success": True,
+        "endpoint": "process-payment-uncontrolled",
+        "resource_management": "disabled",
+        "response_time_seconds": response_time,
+        "result": result,
+        "metrics": {
+            "total_requests": payment_metrics["uncontrolled_total_requests"],
+            "max_active_payment_tasks": payment_metrics["uncontrolled_max_active"],
+        }
+    })
+
+
+@csrf_exempt
+def process_payment_controlled(request):
+    """
+    AFTER resource management:
+    Payment operations are executed through a ThreadPoolExecutor.
+
+    The pool limits the number of concurrently running payment tasks.
+    Extra requests wait until a worker becomes available.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+
+    start = time.time()
+
+    future = payment_executor.submit(_simulate_payment_processing, "controlled")
+    result = future.result()
+
+    response_time = round(time.time() - start, 3)
+
+    return JsonResponse({
+        "success": True,
+        "endpoint": "process-payment-controlled",
+        "resource_management": "enabled",
+        "thread_pool_workers": PAYMENT_POOL_WORKERS,
+        "response_time_seconds": response_time,
+        "result": result,
+        "metrics": {
+            "total_requests": payment_metrics["controlled_total_requests"],
+            "max_active_payment_tasks": payment_metrics["controlled_max_active"],
+        }
+    })
+
+
+@csrf_exempt
+def reset_payment_metrics(request):
+    """
+    Resets payment metrics before running a new resource-management test.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+
+    with payment_metrics_lock:
+        for key in payment_metrics:
+            payment_metrics[key] = 0
+
+    return JsonResponse({
+        "success": True,
+        "message": "Payment metrics reset successfully"
+    })
+
+
+def payment_metrics_view(request):
+    """
+    Returns current payment resource-management metrics.
+    """
+    with payment_metrics_lock:
+        metrics_snapshot = dict(payment_metrics)
+
+    return JsonResponse({
+        "success": True,
+        "payment_pool_workers": PAYMENT_POOL_WORKERS,
+        "payment_simulation_seconds": PAYMENT_SIMULATION_SECONDS,
+        "metrics": metrics_snapshot,
+    })

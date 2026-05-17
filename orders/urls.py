@@ -4,6 +4,12 @@ from .import views
 urlpatterns = [
     path("place-order/", views.place_order),
     path("place-order-unsafe/",views. place_order_unsafe),
+
     path('place-order-sync/',   views.place_order_sync),
     path('place-order-async/',  views.place_order_async),
+
+    path("process-payment-uncontrolled/", views.process_payment_uncontrolled),
+    path("process-payment-controlled/", views.process_payment_controlled),
+    path("payment-metrics/", views.payment_metrics_view),
+    path("payment-metrics/reset/", views.reset_payment_metrics),
 ]
