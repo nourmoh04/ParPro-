@@ -2,7 +2,15 @@ import json
 import requests as http_requests
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-from .balancer import round_robin, least_connections, ip_hash, record_request, release_connection, get_stats
+from .balancer import (
+    round_robin,
+    least_connections,
+    ip_hash,
+    record_request,
+    release_connection,
+    get_stats,
+    reset_stats,
+)
 
 @csrf_exempt
 def route_request(request):
@@ -58,4 +66,12 @@ def get_server_stats(request):
             sid: f"{round(s['requests']/total*100)}%" if total > 0 else "0%"
             for sid, s in stats.items()
         },
+    })
+
+@csrf_exempt
+def reset_server_stats(request):
+    reset_stats()
+    return JsonResponse({
+        "success": True,
+        "message": "Load balancer stats reset successfully"
     })

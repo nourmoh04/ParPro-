@@ -29,6 +29,18 @@ def prepare_data():
     return product
 
 
+def reset_balancer_stats():
+    try:
+        response = requests.post(
+            f"{BASE_URL}/reset/",
+            timeout=10,
+            proxies=NO_PROXY,
+        )
+        print(f"Reset stats: {response.status_code} | {response.text}")
+    except Exception as e:
+        print(f"Reset stats failed: {e}")
+
+
 def send_request(i, strategy, product_id, barrier, results):
     try:
         barrier.wait()
@@ -54,6 +66,7 @@ def send_request(i, strategy, product_id, barrier, results):
 
 def run_test(strategy):
     product = prepare_data()
+    reset_balancer_stats()
     print(f"\n====================================")
     print(f"Strategy: {strategy.upper()} | Requests: {THREADS_COUNT}")
     print(f"====================================\n")

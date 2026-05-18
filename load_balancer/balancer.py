@@ -36,3 +36,10 @@ def release_connection(server_id):
 def get_stats():
     with stats_lock:
         return dict(server_stats)
+
+
+def reset_stats():
+    with stats_lock:
+        for server_id in server_stats:
+            server_stats[server_id]["requests"] = 0
+            server_stats[server_id]["active_connections"] = 0
