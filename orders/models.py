@@ -36,3 +36,59 @@ class CartItem(models.Model):
     cart = models.ForeignKey(Cart, on_delete=models.CASCADE, related_name='items')
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField(default=1)
+
+class BatchJobRun(models.Model):
+    STATUS_CHOICES = [
+        ("running", "Running"),
+        ("completed", "Completed"),
+        ("failed", "Failed"),
+    ]
+
+    job_name = models.CharField(max_length=100)
+    target_date = models.DateField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="running")
+
+    chunk_size = models.PositiveIntegerField()
+    workers_count = models.PositiveIntegerField(default=1)
+
+    total_orders = models.PositiveIntegerField(default=0)
+    processed_orders = models.PositiveIntegerField(default=0)
+    total_revenue = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    duration_seconds = models.FloatField(default=0)
+
+    error_message = models.TextField(blank=True, default="")
+
+    def str(self):
+        return f"{self.job_name} - {self.target_date} - {self.status}"
+
+
+class BatchChunkLog(models.Model):
+    STATUS_CHOICES = [
+        ("completed", "Completed"),
+        ("failed", "Failed"),
+    ]
+
+    job_run = models.ForeignKey(
+        BatchJobRun,
+        on_delete=models.CASCADE,
+        related_name="chunks"
+    )
+
+    chunk_number = models.PositiveIntegerField()
+    start_index = models.PositiveIntegerField()
+    end_index = models.PositiveIntegerField()
+
+    orders_count = models.PositiveIntegerField(default=0)
+    revenue = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES)
+    duration_seconds = models.FloatField(default=0)
+    error_message = models.TextField(blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def str(self):
+        return f"Chunk {self.chunk_number} - {self.status}"
