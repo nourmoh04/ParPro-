@@ -1,0 +1,2 @@
+job_run_id,target_date,total_orders,processed_orders,total_revenue,chunk_size,workers,total_chunks,duration_seconds
+3,2026-05-18,1000,1000,154240.00,100,4,10,0.5441

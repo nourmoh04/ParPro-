@@ -67,7 +67,7 @@ def send_request(i, strategy, product_id, barrier, results):
 def run_test(strategy):
     product = prepare_data()
     reset_balancer_stats()
-    print(f"\n====================================")
+    print(f"====================================")
     print(f"Strategy: {strategy.upper()} | Requests: {THREADS_COUNT}")
     print(f"====================================\n")
 
@@ -85,7 +85,7 @@ def run_test(strategy):
     for t in threads: t.join()
 
     dist = Counter(results)
-    print(f"\n====================================")
+    print(f"====================================")
     print(f"DISTRIBUTION RESULT")
     print(f"====================================")
     for server, count in sorted(dist.items()):
@@ -98,7 +98,7 @@ def run_test(strategy):
         f"{BASE_URL}/stats/",
         proxies=NO_PROXY  
     ).json()
-    print(f"\nTotal handled: {stats['total_requests']}")
+    print(f"Total handled: {stats['total_requests']}")
     print(f"====================================\n")
 
 
