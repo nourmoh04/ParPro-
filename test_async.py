@@ -19,10 +19,7 @@ QUANTITY_PER_REQUEST = 1
 
 
 def prepare_test_data():
-    """
-    Creates a stable product/user for the async processing test and resets stock.
-    Old test orders for this product are removed so each run starts cleanly.
-    """
+
     User.objects.get_or_create(username="async_test_user")
 
     product, _ = Product.objects.get_or_create(
@@ -104,10 +101,7 @@ def send_order(i, url, product_id, barrier, results):
 
 
 def wait_for_background_tasks(seconds=6):
-    """
-    Gives the internal queue enough time to finish email/invoice tasks
-    after async requests returned to the user.
-    """
+
     print(f"Waiting {seconds}s for background tasks to finish...")
     time.sleep(seconds)
 

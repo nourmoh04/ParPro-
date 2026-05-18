@@ -13,8 +13,6 @@ from .models import Order, OrderItem
 from .async_queue import enqueue_task, get_queue_status
 
 
-
-
 def _send_confirmation_email(order_id):
     time.sleep(2)
     print(f" [WORKER] Email sent for Order #{order_id}")
@@ -23,7 +21,6 @@ def _send_confirmation_email(order_id):
 def _generate_invoice(order_id):
     time.sleep(3)
     print(f" [WORKER] Invoice generated for Order #{order_id}")
-
 
 
 def _parse_order_request(request):
@@ -40,7 +37,6 @@ def _parse_order_request(request):
 
 def _get_test_user():
     return User.objects.first()
-
 
 
 @csrf_exempt
@@ -114,10 +110,7 @@ def place_order(request):
 
 @csrf_exempt
 def place_order_sync(request):
-    """
-    Requirement 3 - BEFORE asynchronous queue:
-    The request waits until email sending and invoice generation finish.
-    """
+
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
 
@@ -176,11 +169,7 @@ def place_order_sync(request):
 
 @csrf_exempt
 def place_order_async(request):
-    """
-    Requirement 3 - AFTER asynchronous queue:
-    The order is created quickly, while email and invoice tasks
-    are added to the internal background queue.
-    """
+
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
 
@@ -260,11 +249,6 @@ def async_queue_status_view(request):
     })
 
 
-# ============================================================
-# Requirement 2: Resource Management & Capacity Control
-# Payment processing simulation with and without Thread Pool
-# ============================================================
-
 PAYMENT_SIMULATION_SECONDS = 5
 PAYMENT_POOL_WORKERS = 5
 PAYMENT_MEMORY_MB = 30
@@ -285,12 +269,6 @@ payment_metrics = {
 }
 
 def _consume_cpu_for_seconds(seconds):
-    """
-    Simulates a short CPU workload.
-
-    This is intentionally limited to a small duration so the laptop
-    remains safe during testing.
-    """
     end_time = time.time() + seconds
     checksum = 0
 
@@ -341,12 +319,7 @@ def _simulate_payment_processing(mode):
 
 @csrf_exempt
 def process_payment_uncontrolled(request):
-    """
-    BEFORE resource management:
-    Every incoming request executes the simulated payment directly.
 
-    Under high concurrency, many heavy payment operations may run at the same time.
-    """
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
 
@@ -371,13 +344,7 @@ def process_payment_uncontrolled(request):
 
 @csrf_exempt
 def process_payment_controlled(request):
-    """
-    AFTER resource management:
-    Payment operations are executed through a ThreadPoolExecutor.
 
-    The pool limits the number of concurrently running payment tasks.
-    Extra requests wait until a worker becomes available.
-    """
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
 
@@ -404,9 +371,7 @@ def process_payment_controlled(request):
 
 @csrf_exempt
 def reset_payment_metrics(request):
-    """
-    Resets payment metrics before running a new resource-management test.
-    """
+
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
 
@@ -421,9 +386,6 @@ def reset_payment_metrics(request):
 
 
 def payment_metrics_view(request):
-    """
-    Returns current payment resource-management metrics.
-    """
     with payment_metrics_lock:
         metrics_snapshot = dict(payment_metrics)
 
