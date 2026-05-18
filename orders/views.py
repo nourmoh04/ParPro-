@@ -1,7 +1,6 @@
 import json
 import time
 import threading
-import queue        
 from concurrent.futures import ThreadPoolExecutor
 
 from django.http import JsonResponse
@@ -11,34 +10,8 @@ from django.contrib.auth.models import User
 
 from products.models import Stock
 from .models import Order, OrderItem
+from .async_queue import enqueue_task, get_queue_status
 
-
-
-task_queue = queue.Queue()   
-
-
-def worker():
-    print(" [WORKER] Queue Worker started and waiting for tasks...")
-    while True:
-        try:
-            func, args = task_queue.get(timeout=1)
-            print(f" [WORKER] Picked up task: {func.__name__}")
-            func(*args)
-            task_queue.task_done()
-        except queue.Empty:
-            continue
-        except Exception as e:
-            print(f" [WORKER] Task failed: {e}")
-            task_queue.task_done()
-
-
-worker_thread = threading.Thread(target=worker, daemon=True)
-worker_thread.start()
-
-
-def enqueue_task(func, *args):
-    task_queue.put((func, args))
-    print(f" [QUEUE] Task added: {func.__name__} | Queue size: {task_queue.qsize()}")
 
 
 
@@ -141,90 +114,150 @@ def place_order(request):
 
 @csrf_exempt
 def place_order_sync(request):
-   
+    """
+    Requirement 3 - BEFORE asynchronous queue:
+    The request waits until email sending and invoice generation finish.
+    """
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
+
+    start = time.time()
+
     parsed, error_response = _parse_order_request(request)
     if error_response:
         return error_response
+
     product_id, qty = parsed
     user = _get_test_user()
+
     if not user:
         return JsonResponse({"error": "No users found"}, status=400)
+
     try:
         with transaction.atomic():
             stock = Stock.objects.select_for_update().get(product_id=product_id)
+
             if stock.quantity < qty:
                 return JsonResponse({"error": "Not enough stock!"}, status=400)
+
             stock.quantity -= qty
             stock.save()
+
             product_price = stock.product.price
             order = Order.objects.create(user=user, total=product_price * qty)
+
             OrderItem.objects.create(
-                order=order, product_id=product_id,
-                quantity=qty, price=product_price,
+                order=order,
+                product_id=product_id,
+                quantity=qty,
+                price=product_price,
             )
-        start = time.time()
+
         _send_confirmation_email(order.id)
         _generate_invoice(order.id)
-        total_time = round(time.time() - start, 3)
+
+        response_time = round(time.time() - start, 3)
+
         return JsonResponse({
             "success": True,
             "mode": "sync",
+            "message": "Order created. Email and invoice were processed before response.",
             "order_id": order.id,
-            "response_time_seconds": total_time,
+            "response_time_seconds": response_time,
             "note": "User waited for email + invoice"
         })
+
     except Stock.DoesNotExist:
         return JsonResponse({"error": "Product or Stock not found"}, status=404)
+
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
-
 
 
 @csrf_exempt
 def place_order_async(request):
-    
+    """
+    Requirement 3 - AFTER asynchronous queue:
+    The order is created quickly, while email and invoice tasks
+    are added to the internal background queue.
+    """
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
+
+    start = time.time()
+
     parsed, error_response = _parse_order_request(request)
     if error_response:
         return error_response
+
     product_id, qty = parsed
     user = _get_test_user()
+
     if not user:
         return JsonResponse({"error": "No users found"}, status=400)
+
     try:
-        start = time.time()
         with transaction.atomic():
             stock = Stock.objects.select_for_update().get(product_id=product_id)
+
             if stock.quantity < qty:
                 return JsonResponse({"error": "Not enough stock!"}, status=400)
+
             stock.quantity -= qty
             stock.save()
+
             product_price = stock.product.price
             order = Order.objects.create(user=user, total=product_price * qty)
+
             OrderItem.objects.create(
-                order=order, product_id=product_id,
-                quantity=qty, price=product_price,
+                order=order,
+                product_id=product_id,
+                quantity=qty,
+                price=product_price,
             )
 
-        enqueue_task(_send_confirmation_email, order.id)
-        enqueue_task(_generate_invoice, order.id)
+        email_task_id = enqueue_task(
+            "send_confirmation_email",
+            _send_confirmation_email,
+            order.id
+        )
 
-        total_time = round(time.time() - start, 3)
+        invoice_task_id = enqueue_task(
+            "generate_invoice",
+            _generate_invoice,
+            order.id
+        )
+
+        response_time = round(time.time() - start, 3)
+
         return JsonResponse({
             "success": True,
             "mode": "async",
+            "message": "Order created. Email and invoice tasks were queued.",
             "order_id": order.id,
-            "response_time_seconds": total_time,
-            "queue_size": task_queue.qsize(),
-            "note": "Tasks queued - processed by background worker"
+            "response_time_seconds": response_time,
+            "queued_tasks": {
+                "email_task_id": email_task_id,
+                "invoice_task_id": invoice_task_id,
+            },
+            "note": "Tasks queued and processed by background worker"
         })
+
     except Stock.DoesNotExist:
         return JsonResponse({"error": "Product or Stock not found"}, status=404)
+
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
+
+def async_queue_status_view(request):
+    """
+    Returns the internal async queue status and latest task logs.
+    """
+    return JsonResponse({
+        "success": True,
+        "queue": get_queue_status(),
+    })
 
 
 # ============================================================
