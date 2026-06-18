@@ -2,6 +2,8 @@ import json
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from .distributed_lock import DistributedLock, redis_client
+
 
 from django.http import JsonResponse
 from django.db import transaction
@@ -394,4 +396,75 @@ def payment_metrics_view(request):
         "payment_pool_workers": PAYMENT_POOL_WORKERS,
         "payment_simulation_seconds": PAYMENT_SIMULATION_SECONDS,
         "metrics": metrics_snapshot,
+    })
+
+def _run_heavy_sales_job() -> dict:
+    
+    from orders.models import Order
+    job_start = time.time()
+ 
+    total_orders = Order.objects.count()
+    time.sleep(4)  # محاكاة وقت المعالجة
+ 
+    return {
+        "job":                    "daily_sales_report",
+        "total_orders_processed": total_orders,
+        "processing_time_sec":    round(time.time() - job_start, 2),
+        "finished_at":            time.strftime("%H:%M:%S"),
+    }
+ 
+ 
+@csrf_exempt
+def run_sales_report_unsafe(request):
+    
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+ 
+    result = _run_heavy_sales_job()
+ 
+    return JsonResponse({
+        "success":   True,
+        "mode":      "unsafe",
+        "lock_used": False,
+        "warning":   "No lock! Multiple servers CAN run this job simultaneously.",
+        **result,
+    })
+ 
+ 
+# ── AFTER: مع Redis Distributed Lock ─────────────────────────────────────────
+@csrf_exempt
+def run_sales_report_safe(request):
+    
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+ 
+    lock = DistributedLock("daily_sales_job", timeout=60)
+ 
+    if not lock.acquire():
+        return JsonResponse({
+            "lock_acquired": False,
+            "message":       "Job is already running on another server.",
+            "lock_key":      "lock:daily_sales_job",
+            "lock_ttl_sec":  lock.ttl(),
+        }, status=423) 
+ 
+    try:
+        result = _run_heavy_sales_job()
+        return JsonResponse({
+            "lock_acquired": True,
+            "mode":          "safe",
+            "lock_key":      "lock:daily_sales_job",
+            "lock_type":     "Redis Distributed Lock — NOT a database lock",
+            **result,
+        })
+    finally:
+        lock.release()  
+ 
+ 
+def distributed_lock_status(request):
+    locked = redis_client.exists("lock:daily_sales_job") == 1
+    return JsonResponse({
+        "lock_key":  "lock:daily_sales_job",
+        "is_locked": locked,
+        "ttl_sec":   redis_client.ttl("lock:daily_sales_job") if locked else None,
     })
