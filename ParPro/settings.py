@@ -125,3 +125,20 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+
+# Redis / Memurai cache configuration
+# Memurai is Redis-compatible and runs locally on port 6379.
+REDIS_URL = config("REDIS_URL", default="redis://127.0.0.1:6379/1")
+
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": REDIS_URL,
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        },
+        "KEY_PREFIX": "parpro",
+    }
+}
+
+CACHE_TTL_SECONDS = config("CACHE_TTL_SECONDS", default=60, cast=int)
