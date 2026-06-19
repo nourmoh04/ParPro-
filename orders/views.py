@@ -244,9 +244,6 @@ def place_order_async(request):
 
 
 def async_queue_status_view(request):
-    """
-    Returns the internal async queue status and latest task logs.
-    """
     return JsonResponse({
         "success": True,
         "queue": get_queue_status(),
@@ -401,11 +398,6 @@ def payment_metrics_view(request):
     })
 
 def _run_heavy_sales_job() -> dict:
-    """
-    Simulates a heavy background job such as generating a daily sales report.
-    The job reads aggregated data from the large database, then sleeps to make
-    concurrent execution visible in the test.
-    """
     from django.db.models import Count, Sum
     from orders.models import Order, OrderItem
 
@@ -431,7 +423,6 @@ def _run_heavy_sales_job() -> dict:
         .order_by("-total_sold")[:5]
     )
 
-    # Simulate expensive report generation after reading and aggregating data.
     time.sleep(4)
 
     return {
@@ -450,10 +441,6 @@ def _run_heavy_sales_job() -> dict:
 
 @csrf_exempt
 def run_sales_report_unsafe(request):
-    """
-    BEFORE: No distributed lock is used.
-    If many requests arrive at the same time, all of them can run the same job.
-    """
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
 
@@ -472,10 +459,6 @@ def run_sales_report_unsafe(request):
 
 @csrf_exempt
 def run_sales_report_safe(request):
-    """
-    AFTER: Redis Distributed Lock is used.
-    Only one request can run the job. Other concurrent requests are rejected.
-    """
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
 
@@ -513,9 +496,6 @@ def run_sales_report_safe(request):
 
 
 def distributed_lock_status(request):
-    """
-    Shows whether the Redis distributed lock is currently held.
-    """
     lock_key = "lock:daily_sales_job"
     locked = redis_client.exists(lock_key) == 1
 
@@ -527,10 +507,6 @@ def distributed_lock_status(request):
         "ttl_sec": redis_client.ttl(lock_key) if locked else None,
     })
 
-
-# ============================================================
-# Requirement 8: ACID / Transaction Integrity
-# ============================================================
 
 def _json_body(request):
     try:
@@ -549,18 +525,6 @@ def _wallet_value(wallet):
 
 @csrf_exempt
 def acid_test_setup(request):
-    """
-    Prepares deterministic test data for Requirement 8.
-
-    It creates:
-    - one special product
-    - stock for that product
-    - one single test user
-    - N concurrent test users
-    - wallets with fixed balance
-
-    It deletes only ACID-specific data before recreating it.
-    """
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
 
@@ -580,7 +544,6 @@ def acid_test_setup(request):
 
         acid_products = Product.objects.filter(name__startswith="ACID")
 
-        # Delete only ACID test data.
         OrderItem.objects.filter(order__user__in=acid_users).delete()
         Order.objects.filter(user__in=acid_users).delete()
         UserWallet.objects.filter(user__in=acid_users).delete()
@@ -642,10 +605,6 @@ def acid_test_setup(request):
 
 
 def acid_state(request):
-    """
-    Returns the current ACID test state:
-    product stock, wallets, orders, and order items.
-    """
     product_name = request.GET.get("product_name", "ACID Transaction Product")
 
     product = Product.objects.filter(name=product_name).first()
@@ -714,11 +673,7 @@ def _perform_checkout(
     force_failure=False,
     use_transaction=False,
 ):
-    """
-    Shared checkout logic for unsafe and safe modes.
-    In safe mode, the caller wraps this function in transaction.atomic()
-    and uses row-level locks.
-    """
+
     user = User.objects.get(username=username)
 
     if use_transaction:
@@ -795,12 +750,6 @@ def _perform_checkout(
 
 @csrf_exempt
 def checkout_unsafe(request):
-    """
-    BEFORE: Unsafe checkout without transaction.
-
-    If a failure happens after wallet/stock updates but before order creation,
-    the database can be left in an inconsistent partial state.
-    """
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
 
@@ -841,18 +790,6 @@ def checkout_unsafe(request):
 
 @csrf_exempt
 def checkout_safe(request):
-    """
-    AFTER: Safe checkout using ACID transaction and row-level locks.
-
-    The operation is:
-    - check wallet
-    - deduct wallet balance
-    - check and deduct stock
-    - create order
-    - create order item
-
-    All steps commit together or rollback together.
-    """
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
 

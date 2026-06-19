@@ -10,12 +10,6 @@ _log_lock = threading.Lock()
 
 
 class StructuredRequestLoggingMiddleware:
-    """
-    Structured request logging middleware.
-
-    It writes one JSON object per HTTP request to logs/request_logs.jsonl.
-    This is used for Req #10 benchmarking and bottleneck analysis.
-    """
 
     def __init__(self, get_response):
         self.get_response = get_response

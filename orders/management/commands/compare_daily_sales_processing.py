@@ -15,10 +15,6 @@ def split_into_chunks(items, chunk_size):
 
 
 def simulate_order_report_work(milliseconds):
-    """
-    Simulates small per-order processing work, such as preparing
-    report rows, transforming data, or exporting sales information.
-    """
     if milliseconds > 0:
         time.sleep(milliseconds / 1000)
 

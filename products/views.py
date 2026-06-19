@@ -41,11 +41,6 @@ def _get_metrics_snapshot():
 
 
 def _simulate_expensive_database_read(seconds=0.15):
-    """
-    Simulates an expensive database operation such as complex joins,
-    filtering, or aggregation under high traffic.
-    This makes the cache benefit visible during testing.
-    """
     time.sleep(seconds)
 
 
@@ -340,13 +335,6 @@ def _positive_int_query_param(request, name, default, min_value=1, max_value=100
 
 
 def product_list_paginated_cached(request):
-    """
-    Requirement #10 improvement:
-    Cached paginated product list.
-
-    This endpoint improves the full product list bottleneck by returning
-    only one page of products instead of the entire catalog.
-    """
     start = time.time()
 
     page = _positive_int_query_param(

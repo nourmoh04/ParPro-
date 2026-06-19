@@ -18,11 +18,6 @@ class DistributedLock:
         self.token   = str(uuid.uuid4())  # unique لكل عملية acquire
 
     def acquire(self) -> bool:
-        """
-        حاول تاخذ القفل (بدون انتظار).
-        True  = القفل أخذناه، نقدر نكمل.
-        False = سيرفر ثاني شايل القفل هلق.
-        """
         result = redis_client.set(
             self.key,
             self.token,
@@ -42,5 +37,4 @@ class DistributedLock:
         redis_client.eval(lua, 1, self.key, self.token)
 
     def ttl(self) -> int:
-        """كم ثانية باقية قبل ما القفل ينتهي تلقائياً."""
         return redis_client.ttl(self.key)
