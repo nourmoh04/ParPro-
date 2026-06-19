@@ -2,6 +2,18 @@ from django.db import models
 from django.contrib.auth.models import User
 from products.models import Product
 
+class UserWallet(models.Model):
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name="wallet"
+    )
+    balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Wallet for {self.user.username}: {self.balance}"
+        
 class Order(models.Model):
     STATUS_CHOICES = [
         ('pending', 'Pending'),

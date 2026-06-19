@@ -1,17 +1,19 @@
 import json
 import time
 import threading
+from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
 from .distributed_lock import DistributedLock, redis_client
 
 
 from django.http import JsonResponse
 from django.db import transaction
+from django.db.models import Q, Count, Sum
 from django.views.decorators.csrf import csrf_exempt
 from django.contrib.auth.models import User
 
-from products.models import Stock
-from .models import Order, OrderItem
+from products.models import Stock, Product
+from .models import Order, OrderItem, UserWallet
 from .async_queue import enqueue_task, get_queue_status
 
 
@@ -524,3 +526,377 @@ def distributed_lock_status(request):
         "is_locked": locked,
         "ttl_sec": redis_client.ttl(lock_key) if locked else None,
     })
+
+
+# ============================================================
+# Requirement 8: ACID / Transaction Integrity
+# ============================================================
+
+def _json_body(request):
+    try:
+        return json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return {}
+
+
+def _money(value):
+    return Decimal(str(value))
+
+
+def _wallet_value(wallet):
+    return float(wallet.balance) if wallet else None
+
+
+@csrf_exempt
+def acid_test_setup(request):
+    """
+    Prepares deterministic test data for Requirement 8.
+
+    It creates:
+    - one special product
+    - stock for that product
+    - one single test user
+    - N concurrent test users
+    - wallets with fixed balance
+
+    It deletes only ACID-specific data before recreating it.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+
+    data = _json_body(request)
+
+    users_count = int(data.get("users", 50))
+    stock_quantity = int(data.get("stock", 20))
+    wallet_balance = _money(data.get("wallet_balance", "1000.00"))
+    product_price = _money(data.get("product_price", "50.00"))
+    product_name = data.get("product_name", "ACID Transaction Product")
+
+    with transaction.atomic():
+        acid_users = User.objects.filter(
+            Q(username="acid_single_user") |
+            Q(username__startswith="acid_user_")
+        )
+
+        acid_products = Product.objects.filter(name__startswith="ACID")
+
+        # Delete only ACID test data.
+        OrderItem.objects.filter(order__user__in=acid_users).delete()
+        Order.objects.filter(user__in=acid_users).delete()
+        UserWallet.objects.filter(user__in=acid_users).delete()
+        acid_users.delete()
+
+        Stock.objects.filter(product__in=acid_products).delete()
+        acid_products.delete()
+
+        product = Product.objects.create(
+            name=product_name,
+            price=product_price
+        )
+
+        Stock.objects.create(
+            product=product,
+            quantity=stock_quantity
+        )
+
+        single_user = User.objects.create_user(
+            username="acid_single_user",
+            email="acid_single_user@example.com",
+            password="test123"
+        )
+
+        UserWallet.objects.create(
+            user=single_user,
+            balance=wallet_balance
+        )
+
+        created_users = [single_user.username]
+
+        for i in range(1, users_count + 1):
+            username = f"acid_user_{i:03d}"
+            user = User.objects.create_user(
+                username=username,
+                email=f"{username}@example.com",
+                password="test123"
+            )
+            UserWallet.objects.create(
+                user=user,
+                balance=wallet_balance
+            )
+            created_users.append(username)
+
+    return JsonResponse({
+        "success": True,
+        "message": "ACID test data prepared.",
+        "product": {
+            "id": product.id,
+            "name": product.name,
+            "price": float(product.price),
+            "stock": stock_quantity,
+        },
+        "single_user": "acid_single_user",
+        "concurrent_users": users_count,
+        "wallet_balance": float(wallet_balance),
+        "note": "Only ACID test data was reset. Final seed data and old requirements data were not touched.",
+    })
+
+
+def acid_state(request):
+    """
+    Returns the current ACID test state:
+    product stock, wallets, orders, and order items.
+    """
+    product_name = request.GET.get("product_name", "ACID Transaction Product")
+
+    product = Product.objects.filter(name=product_name).first()
+    if not product:
+        return JsonResponse({
+            "success": False,
+            "error": "ACID product not found. Run /orders/acid/setup/ first."
+        }, status=404)
+
+    stock = Stock.objects.filter(product=product).first()
+
+    acid_users = User.objects.filter(
+        Q(username="acid_single_user") |
+        Q(username__startswith="acid_user_")
+    )
+
+    wallets = UserWallet.objects.filter(user__in=acid_users)
+
+    wallet_distribution = []
+    for row in (
+        wallets
+        .values("balance")
+        .annotate(count=Count("id"))
+        .order_by("balance")
+    ):
+        wallet_distribution.append({
+            "balance": float(row["balance"]),
+            "count": row["count"],
+        })
+
+    orders = Order.objects.filter(user__in=acid_users)
+    order_items = OrderItem.objects.filter(order__in=orders)
+
+    single_user = User.objects.filter(username="acid_single_user").first()
+    single_wallet = None
+    if single_user:
+        single_wallet = UserWallet.objects.filter(user=single_user).first()
+
+    return JsonResponse({
+        "success": True,
+        "product": {
+            "id": product.id,
+            "name": product.name,
+            "price": float(product.price),
+            "stock_quantity": stock.quantity if stock else None,
+        },
+        "single_user": {
+            "username": "acid_single_user",
+            "wallet_balance": _wallet_value(single_wallet),
+            "orders_count": orders.filter(user=single_user).count() if single_user else 0,
+        },
+        "acid_users_count": acid_users.count(),
+        "wallet_distribution": wallet_distribution,
+        "orders_count": orders.count(),
+        "completed_orders_count": orders.filter(status="completed").count(),
+        "order_items_count": order_items.count(),
+        "total_order_quantity": order_items.aggregate(total=Sum("quantity"))["total"] or 0,
+        "total_order_value": float(orders.aggregate(total=Sum("total"))["total"] or 0),
+    })
+
+
+def _perform_checkout(
+    username,
+    product_id,
+    quantity,
+    force_failure=False,
+    use_transaction=False,
+):
+    """
+    Shared checkout logic for unsafe and safe modes.
+    In safe mode, the caller wraps this function in transaction.atomic()
+    and uses row-level locks.
+    """
+    user = User.objects.get(username=username)
+
+    if use_transaction:
+        wallet = UserWallet.objects.select_for_update().get(user=user)
+        stock = Stock.objects.select_for_update().select_related("product").get(product_id=product_id)
+    else:
+        wallet = UserWallet.objects.get(user=user)
+        stock = Stock.objects.select_related("product").get(product_id=product_id)
+
+    product = stock.product
+    total = product.price * quantity
+
+    if wallet.balance < total:
+        return {
+            "ok": False,
+            "status": 400,
+            "payload": {
+                "success": False,
+                "error": "Insufficient wallet balance",
+                "wallet_balance": float(wallet.balance),
+                "required": float(total),
+            }
+        }
+
+    if stock.quantity < quantity:
+        return {
+            "ok": False,
+            "status": 400,
+            "payload": {
+                "success": False,
+                "error": "Insufficient stock",
+                "available_stock": stock.quantity,
+                "requested_quantity": quantity,
+            }
+        }
+
+    wallet.balance -= total
+    wallet.save(update_fields=["balance", "updated_at"])
+
+    stock.quantity -= quantity
+    stock.save(update_fields=["quantity"])
+
+    if force_failure:
+        raise RuntimeError("Forced failure after wallet and stock update, before order creation.")
+
+    order = Order.objects.create(
+        user=user,
+        status="completed",
+        total=total
+    )
+
+    OrderItem.objects.create(
+        order=order,
+        product=product,
+        quantity=quantity,
+        price=product.price
+    )
+
+    return {
+        "ok": True,
+        "status": 200,
+        "payload": {
+            "success": True,
+            "order_id": order.id,
+            "username": username,
+            "product_id": product.id,
+            "quantity": quantity,
+            "total": float(total),
+            "remaining_wallet_balance": float(wallet.balance),
+            "remaining_stock": stock.quantity,
+        }
+    }
+
+
+@csrf_exempt
+def checkout_unsafe(request):
+    """
+    BEFORE: Unsafe checkout without transaction.
+
+    If a failure happens after wallet/stock updates but before order creation,
+    the database can be left in an inconsistent partial state.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+
+    data = _json_body(request)
+
+    username = data.get("username", "acid_single_user")
+    product_id = int(data["product_id"])
+    quantity = int(data.get("quantity", 1))
+    force_failure = bool(data.get("force_failure", False))
+
+    try:
+        result = _perform_checkout(
+            username=username,
+            product_id=product_id,
+            quantity=quantity,
+            force_failure=force_failure,
+            use_transaction=False,
+        )
+
+        result["payload"].update({
+            "mode": "unsafe",
+            "transaction_used": False,
+            "warning": "No transaction is used. A mid-operation failure can leave partial updates."
+        })
+
+        return JsonResponse(result["payload"], status=result["status"])
+
+    except Exception as exc:
+        return JsonResponse({
+            "success": False,
+            "mode": "unsafe",
+            "transaction_used": False,
+            "error": str(exc),
+            "inconsistency_risk": True,
+            "message": "Failure happened outside transaction. Previous wallet/stock updates may remain saved."
+        }, status=500)
+
+
+@csrf_exempt
+def checkout_safe(request):
+    """
+    AFTER: Safe checkout using ACID transaction and row-level locks.
+
+    The operation is:
+    - check wallet
+    - deduct wallet balance
+    - check and deduct stock
+    - create order
+    - create order item
+
+    All steps commit together or rollback together.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST only"}, status=405)
+
+    data = _json_body(request)
+
+    username = data.get("username", "acid_single_user")
+    product_id = int(data["product_id"])
+    quantity = int(data.get("quantity", 1))
+    force_failure = bool(data.get("force_failure", False))
+
+    try:
+        with transaction.atomic():
+            result = _perform_checkout(
+                username=username,
+                product_id=product_id,
+                quantity=quantity,
+                force_failure=force_failure,
+                use_transaction=True,
+            )
+
+            if not result["ok"]:
+                return JsonResponse({
+                    **result["payload"],
+                    "mode": "safe",
+                    "transaction_used": True,
+                    "rollback_needed": False,
+                    "message": "Request failed before any update was applied."
+                }, status=result["status"])
+
+        result["payload"].update({
+            "mode": "safe",
+            "transaction_used": True,
+            "row_locks_used": ["UserWallet", "Stock"],
+            "message": "Wallet, stock, order, and order item were committed together."
+        })
+
+        return JsonResponse(result["payload"], status=result["status"])
+
+    except Exception as exc:
+        return JsonResponse({
+            "success": False,
+            "mode": "safe",
+            "transaction_used": True,
+            "rollback_applied": True,
+            "error": str(exc),
+            "message": "Failure happened inside transaction.atomic(); wallet, stock, and order changes were rolled back."
+        }, status=500)

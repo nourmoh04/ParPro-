@@ -17,4 +17,9 @@ urlpatterns = [
     path("run-sales-report-unsafe/",   views.run_sales_report_unsafe),
     path("run-sales-report-safe/",     views.run_sales_report_safe),
     path("distributed-lock-status/",   views.distributed_lock_status),
+
+    path("acid/setup/", views.acid_test_setup),
+    path("acid/state/", views.acid_state),
+    path("checkout-unsafe/", views.checkout_unsafe),
+    path("checkout-safe/", views.checkout_safe),
 ]
