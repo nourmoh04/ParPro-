@@ -2,7 +2,7 @@
 
 This project is a simplified Django-based E-Commerce backend used to demonstrate and test several non-functional requirements.
 
-The goal of this project is not to build a full production-ready online shop with a user interface. Instead, the project focuses on backend behavior, performance, concurrency, resource usage, asynchronous processing, batch processing, and load distribution.
+The goal of this project is not to build a full production-ready online shop with a user interface. Instead, the project focuses on backend behavior, performance, concurrency, resource usage, asynchronous processing, batch processing, caching, distributed locking, transaction integrity, stress testing, and benchmarking.
 
 ## Project Overview
 
@@ -13,6 +13,7 @@ The project contains basic E-Commerce entities:
 - Orders
 - Order items
 - Cart and cart items
+- User wallets
 
 These functional parts are used as a base for testing the required non-functional requirements.
 
@@ -21,6 +22,7 @@ Some external operations are simulated, such as:
 - Payment processing
 - Sending confirmation emails
 - Generating invoices
+- Sales report generation
 
 These operations are simulated because the main goal is to test non-functional behavior, not to integrate real payment gateways, real email services, or real invoice providers.
 
@@ -47,14 +49,14 @@ This locks the stock row during the order process and prevents inconsistent upda
 Test file:
 
 ```text
-test_race.py
+tests/test_race.py
 ```
 
 Example commands:
 
 ```bash
-python test_race.py unsafe
-python test_race.py safe
+python -m tests.test_race unsafe
+python -m tests.test_race safe
 ```
 
 Expected result:
@@ -82,7 +84,7 @@ Related files:
 ```text
 orders/views.py
 orders/urls.py
-monitor_resources.py
+tests/monitor_resources.py
 tests/jmeter/resource_management_test.jmx
 ```
 
@@ -102,14 +104,14 @@ tests/jmeter/resource_management_test.jmx
 Resource monitor:
 
 ```text
-monitor_resources.py
+tests/monitor_resources.py
 ```
 
 Example monitor commands:
 
 ```bash
-python monitor_resources.py uncontrolled_50
-python monitor_resources.py controlled_50
+python -m tests.monitor_resources uncontrolled
+python -m tests.monitor_resources controlled
 ```
 
 Expected result:
@@ -144,13 +146,13 @@ Related files:
 
 ```text
 orders/async_queue.py
-test_async.py
+tests/test_async.py
 ```
 
 Example command:
 
 ```bash
-python test_async.py compare
+python -m tests.test_async compare
 ```
 
 Expected result:
@@ -237,7 +239,7 @@ Related files:
 
 ```text
 load_balancer/
-test_load_balancer.py
+tests/test_load_balancer.py
 ```
 
 Implemented strategies:
@@ -266,9 +268,9 @@ python manage.py runserver 8003
 Then run:
 
 ```bash
-python test_load_balancer.py round_robin
-python test_load_balancer.py least_connections
-python test_load_balancer.py ip_hash
+python -m tests.test_load_balancer round_robin
+python -m tests.test_load_balancer least_connections
+python -m tests.test_load_balancer ip_hash
 ```
 
 Expected Round Robin result:
@@ -284,6 +286,217 @@ This proves that requests are distributed across multiple application instances.
 Note:
 
 The IP Hash strategy usually sends all local requests to the same server because all requests come from the same local IP address. This is expected behavior and is not considered a failure.
+
+---
+
+### Requirement 6: Distributed Caching
+
+This requirement implements Redis-based caching for product-related endpoints.
+
+Implemented endpoints:
+
+```text
+/products/list-uncached/
+/products/list-cached/
+/products/<product_id>/detail-uncached/
+/products/<product_id>/detail-cached/
+/products/popular-uncached/
+/products/popular-cached/
+/products/cache-metrics/
+/products/cache-metrics/reset/
+/products/cache-clear/
+```
+
+The cached endpoints use Redis to reduce repeated database reads for frequently requested product data.
+
+Related files:
+
+```text
+products/views.py
+products/urls.py
+tests/test_cache.py
+```
+
+Example command:
+
+```bash
+python -m tests.test_cache
+```
+
+Expected result:
+
+- The first cached request is a cache miss.
+- The second cached request is a cache hit.
+- Cached responses are faster than uncached responses.
+- Database reads do not increase on cache hits.
+
+---
+
+### Requirement 7: Distributed Lock
+
+This requirement implements a Redis distributed lock to prevent the same heavy background job from running multiple times at the same time.
+
+Implemented endpoints:
+
+```text
+/orders/run-sales-report-unsafe/
+/orders/run-sales-report-safe/
+/orders/distributed-lock-status/
+```
+
+The unsafe endpoint allows multiple concurrent sales report jobs to run at once.
+
+The safe endpoint uses Redis `SET NX EX` to allow only one job to run while the other requests are blocked by the distributed lock.
+
+Related files:
+
+```text
+orders/distributed_lock.py
+orders/views.py
+orders/urls.py
+tests/test_distributed_lock.py
+```
+
+Example commands:
+
+```bash
+python -m tests.test_distributed_lock 10
+python -m tests.test_distributed_lock 50
+```
+
+Expected result:
+
+- Before using the Redis lock, all concurrent jobs can start.
+- After using the Redis lock, only one job starts and the remaining requests are blocked.
+- This requirement uses Redis locking, while Requirement 1 uses database row locking.
+
+---
+
+### Requirement 8: ACID Transaction Integrity
+
+This requirement demonstrates that payment, stock update, order creation, and order item creation must commit or rollback together.
+
+Implemented endpoints:
+
+```text
+/orders/acid/setup/
+/orders/acid/state/
+/orders/checkout-unsafe/
+/orders/checkout-safe/
+```
+
+The unsafe checkout can leave partial updates if a failure happens after wallet and stock changes.
+
+The safe checkout uses:
+
+```text
+transaction.atomic()
+select_for_update()
+```
+
+This ensures that wallet balance, stock quantity, order creation, and order item creation are handled as one atomic transaction.
+
+Related files:
+
+```text
+orders/models.py
+orders/views.py
+orders/urls.py
+orders/migrations/0004_userwallet.py
+tests/test_acid.py
+```
+
+Example command:
+
+```bash
+python -m tests.test_acid
+```
+
+Expected result:
+
+- Unsafe failure demonstrates a partial update problem.
+- Safe failure rolls back all changes.
+- Safe success commits wallet, stock, order, and order item together.
+- Concurrent safe checkout remains consistent.
+
+---
+
+### Requirement 9: Stress Testing
+
+This requirement tests the system under 100 concurrent users.
+
+Each simulated user performs a realistic E-Commerce journey:
+
+```text
+1. View cached product list
+2. View cached product detail
+3. View cached popular products
+4. Perform safe checkout
+```
+
+The test uses existing final seed data and creates or tops up wallets only when needed because the wallet model was introduced later.
+
+Related files:
+
+```text
+tests/test_stress.py
+```
+
+Example command:
+
+```bash
+python -m tests.test_stress
+```
+
+Expected result:
+
+- 100 users are simulated concurrently.
+- Around 400 requests are executed.
+- The system should handle the requests without server failure.
+- The test reports response time, success rate, throughput, and slowest endpoints.
+
+---
+
+### Requirement 10: Benchmarking and Bottleneck Analysis
+
+This requirement uses benchmarking and structured request logs to identify and improve a performance bottleneck.
+
+The stress test showed that returning the full product catalog can become expensive under load. The improvement adds a cached paginated product list endpoint.
+
+Implemented endpoint:
+
+```text
+/products/list-paginated-cached/?page=1&page_size=100
+```
+
+The benchmark compares:
+
+```text
+Before: /products/list-cached/
+After:  /products/list-paginated-cached/?page=1&page_size=100
+```
+
+Related files:
+
+```text
+ParPro/request_logging.py
+products/views.py
+products/urls.py
+tests/test_benchmark.py
+```
+
+Example command:
+
+```bash
+python -m tests.test_benchmark
+```
+
+Expected result:
+
+- The paginated cached endpoint returns fewer products per response.
+- Payload size is reduced.
+- Average response time and P95 response time improve.
+- Throughput increases.
 
 ---
 
@@ -335,20 +548,50 @@ DB_USER=postgres
 DB_PASSWORD=your-password
 DB_HOST=localhost
 DB_PORT=5432
+
+REDIS_URL=redis://127.0.0.1:6379/1
+CACHE_TTL_SECONDS=60
 ```
 
 Do not commit the real `.env` file to GitHub.
 
-### 6. Apply migrations
+### 6. Start Redis or Memurai
+
+Requirements 6 and 7 require Redis or a Redis-compatible server such as Memurai.
+
+Example Memurai check on Windows:
+
+```powershell
+& "C:\Program Files\Memurai\memurai-cli.exe" ping
+```
+
+Expected result:
+
+```text
+PONG
+```
+
+### 7. Apply migrations
 
 ```bash
 python manage.py migrate
 ```
 
-### 7. Run the development server
+### 8. Seed or prepare data
+
+If the database is empty, create enough products, users, stock rows, and orders for the tests.
+
+Useful commands:
 
 ```bash
-python manage.py runserver
+python manage.py seed_batch_orders --count 1000
+python manage.py seed_final_data --users 1500 --products 3000 --orders 6000 --carts 1000 --reset-final-data
+```
+
+### 9. Run the development server
+
+```bash
+python manage.py runserver 8000
 ```
 
 Default server:
@@ -363,21 +606,34 @@ http://127.0.0.1:8000/
 
 | Requirement | Test / Tool | File |
 |---|---|---|
-| Race Condition | Python threading test | `test_race.py` |
-| Resource Management | JMeter + resource monitor | `tests/jmeter/resource_management_test.jmx`, `monitor_resources.py` |
-| Async Queue | Python threading test | `test_async.py` |
-| Batch Processing | Django management commands | `seed_batch_orders.py`, `compare_daily_sales_processing.py`, `run_daily_sales_batch.py` |
-| Load Distribution | Python threading test | `test_load_balancer.py` |
+| Requirement 1: Race Condition | Python threading test | `tests/test_race.py` |
+| Requirement 2: Resource Management | JMeter + resource monitor | `tests/jmeter/resource_management_test.jmx`, `tests/monitor_resources.py` |
+| Requirement 3: Async Queue | Python comparison test | `tests/test_async.py` |
+| Requirement 4: Batch Processing | Django management commands | `orders/management/commands/` |
+| Requirement 5: Load Distribution | Python threading test | `tests/test_load_balancer.py` |
+| Requirement 6: Distributed Caching | Python cache test | `tests/test_cache.py` |
+| Requirement 7: Distributed Lock | Python concurrency test | `tests/test_distributed_lock.py` |
+| Requirement 8: ACID Transaction Integrity | Python transaction test | `tests/test_acid.py` |
+| Requirement 9: Stress Testing | Python stress test | `tests/test_stress.py` |
+| Requirement 10: Benchmarking | Python benchmark test | `tests/test_benchmark.py` |
 
 ---
 
 ## Useful Test Commands
 
+Most Python test scripts are stored inside the `tests/` folder and should be executed as Python modules from the project root.
+
+Run the Django server first for API-based tests:
+
+```bash
+python manage.py runserver 8000
+```
+
 ### Requirement 1
 
 ```bash
-python test_race.py unsafe
-python test_race.py safe
+python -m tests.test_race unsafe
+python -m tests.test_race safe
 ```
 
 ### Requirement 2
@@ -385,10 +641,16 @@ python test_race.py safe
 Run the Django server first:
 
 ```bash
-python manage.py runserver
+python manage.py runserver 8000
 ```
 
-Then run the JMeter test plan:
+Reset payment metrics:
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/orders/payment-metrics/reset/
+```
+
+Run the JMeter test plan:
 
 ```text
 tests/jmeter/resource_management_test.jmx
@@ -397,14 +659,20 @@ tests/jmeter/resource_management_test.jmx
 Resource monitor examples:
 
 ```bash
-python monitor_resources.py uncontrolled_50
-python monitor_resources.py controlled_50
+python -m tests.monitor_resources uncontrolled
+python -m tests.monitor_resources controlled
+```
+
+Metrics endpoint:
+
+```text
+/orders/payment-metrics/
 ```
 
 ### Requirement 3
 
 ```bash
-python test_async.py compare
+python -m tests.test_async compare
 ```
 
 ### Requirement 4
@@ -429,9 +697,40 @@ python manage.py runserver 8003
 Then run:
 
 ```bash
-python test_load_balancer.py round_robin
-python test_load_balancer.py least_connections
-python test_load_balancer.py ip_hash
+python -m tests.test_load_balancer round_robin
+python -m tests.test_load_balancer least_connections
+python -m tests.test_load_balancer ip_hash
+```
+
+### Requirement 6
+
+```bash
+python -m tests.test_cache
+```
+
+### Requirement 7
+
+```bash
+python -m tests.test_distributed_lock 10
+python -m tests.test_distributed_lock 50
+```
+
+### Requirement 8
+
+```bash
+python -m tests.test_acid
+```
+
+### Requirement 9
+
+```bash
+python -m tests.test_stress
+```
+
+### Requirement 10
+
+```bash
+python -m tests.test_benchmark
 ```
 
 ---
@@ -441,11 +740,13 @@ python test_load_balancer.py ip_hash
 - This project is backend-focused.
 - Some operations are simulated to focus on non-functional behavior.
 - The project uses PostgreSQL.
+- Redis or Memurai is used for distributed caching and distributed locking.
 - The `.env` file should not be uploaded to GitHub.
-- Generated reports and runtime outputs should not be committed unless required for documentation.
+- Generated reports, logs, benchmark outputs, and runtime outputs should not be committed unless required for documentation.
 - JMeter is used for the resource management test.
 - The internal async queue can be replaced by Redis/Celery or RabbitMQ in a production environment.
 - The Django-based load balancer is used for educational purposes. In production, systems usually use Nginx, HAProxy, or cloud load balancers.
+- Test files are organized under the `tests/` folder. They should be executed from the project root using `python -m tests.<module_name>`.
 
 ---
 
@@ -459,4 +760,9 @@ Requirement 2: Completed
 Requirement 3: Completed
 Requirement 4: Completed
 Requirement 5: Completed
+Requirement 6: Completed
+Requirement 7: Completed
+Requirement 8: Completed
+Requirement 9: Completed
+Requirement 10: Completed
 ```
