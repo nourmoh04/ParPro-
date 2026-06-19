@@ -151,9 +151,6 @@ def main():
     print_summary("BEFORE RESULT", before)
     print(f"\nISSUE DEMONSTRATED: {before['started_jobs']} jobs started at the same time.")
 
-    print("\nWaiting 6 seconds for unsafe jobs to finish...")
-    time.sleep(6)
-
     clear_redis_lock()
 
     after = run_concurrent_test(

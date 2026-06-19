@@ -14,4 +14,6 @@ urlpatterns = [
     path("cache-metrics/", views.cache_metrics_view),
     path("cache-metrics/reset/", views.reset_cache_metrics),
     path("cache-clear/", views.clear_product_cache),
+    
+    path("list-paginated-cached/", views.product_list_paginated_cached),
 ]

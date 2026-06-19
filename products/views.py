@@ -6,6 +6,7 @@ from django.core.cache import cache
 from django.db.models import Sum
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+from django.core.paginator import Paginator
 
 from products.models import Product, Stock
 from orders.models import OrderItem
@@ -321,3 +322,100 @@ def clear_product_cache(request):
         "success": True,
         "message": "Product cache keys cleared successfully."
     })
+
+
+def _positive_int_query_param(request, name, default, min_value=1, max_value=100):
+    try:
+        value = int(request.GET.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+
+    if value < min_value:
+        value = min_value
+
+    if value > max_value:
+        value = max_value
+
+    return value
+
+
+def product_list_paginated_cached(request):
+    """
+    Requirement #10 improvement:
+    Cached paginated product list.
+
+    This endpoint improves the full product list bottleneck by returning
+    only one page of products instead of the entire catalog.
+    """
+    start = time.time()
+
+    page = _positive_int_query_param(
+        request,
+        "page",
+        default=1,
+        min_value=1,
+        max_value=10_000,
+    )
+
+    page_size = _positive_int_query_param(
+        request,
+        "page_size",
+        default=100,
+        min_value=1,
+        max_value=100,
+    )
+
+    cache_key = f"products:list:paginated:v1:page:{page}:size:{page_size}"
+    cache_ttl = getattr(settings, "CACHE_TTL_SECONDS", 60)
+
+    cached_payload = cache.get(cache_key)
+
+    if cached_payload is not None:
+        payload = dict(cached_payload)
+        payload["response_time_seconds"] = round(time.time() - start, 4)
+        payload["cache_status"] = "HIT"
+        payload["data_source"] = "redis_cache"
+        return JsonResponse(payload)
+
+    products_qs = Product.objects.order_by("id")
+    paginator = Paginator(products_qs, page_size)
+    page_obj = paginator.get_page(page)
+
+    product_ids = [product.id for product in page_obj.object_list]
+
+    stock_by_product_id = {
+        stock.product_id: stock.quantity
+        for stock in Stock.objects.filter(product_id__in=product_ids)
+    }
+
+    products_data = [
+        {
+            "id": product.id,
+            "name": product.name,
+            "price": float(product.price),
+            "stock_quantity": stock_by_product_id.get(product.id, 0),
+        }
+        for product in page_obj.object_list
+    ]
+
+    payload = {
+        "success": True,
+        "cache_enabled": True,
+        "cache_status": "MISS",
+        "data_source": "database_cache_miss",
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total_products": paginator.count,
+            "total_pages": paginator.num_pages,
+            "has_next": page_obj.has_next(),
+            "has_previous": page_obj.has_previous(),
+        },
+        "products": products_data,
+    }
+
+    cache.set(cache_key, payload, timeout=cache_ttl)
+
+    payload["response_time_seconds"] = round(time.time() - start, 4)
+
+    return JsonResponse(payload)
