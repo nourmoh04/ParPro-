@@ -399,72 +399,128 @@ def payment_metrics_view(request):
     })
 
 def _run_heavy_sales_job() -> dict:
-    
-    from orders.models import Order
+    """
+    Simulates a heavy background job such as generating a daily sales report.
+    The job reads aggregated data from the large database, then sleeps to make
+    concurrent execution visible in the test.
+    """
+    from django.db.models import Count, Sum
+    from orders.models import Order, OrderItem
+
     job_start = time.time()
- 
-    total_orders = Order.objects.count()
-    time.sleep(4)  # محاكاة وقت المعالجة
- 
+
+    completed_orders = Order.objects.filter(status="completed")
+
+    order_stats = completed_orders.aggregate(
+        completed_orders=Count("id"),
+        total_revenue=Sum("total"),
+    )
+
+    item_stats = OrderItem.objects.filter(order__status="completed").aggregate(
+        order_items_processed=Count("id"),
+        total_quantity_sold=Sum("quantity"),
+    )
+
+    top_products = list(
+        OrderItem.objects
+        .filter(order__status="completed")
+        .values("product_id", "product__name")
+        .annotate(total_sold=Sum("quantity"), order_items=Count("id"))
+        .order_by("-total_sold")[:5]
+    )
+
+    # Simulate expensive report generation after reading and aggregating data.
+    time.sleep(4)
+
     return {
-        "job":                    "daily_sales_report",
-        "total_orders_processed": total_orders,
-        "processing_time_sec":    round(time.time() - job_start, 2),
-        "finished_at":            time.strftime("%H:%M:%S"),
+        "job": "daily_sales_report",
+        "job_status": "completed",
+        "database_workload": {
+            "completed_orders": order_stats["completed_orders"] or 0,
+            "order_items_processed": item_stats["order_items_processed"] or 0,
+            "total_quantity_sold": item_stats["total_quantity_sold"] or 0,
+            "total_revenue": float(order_stats["total_revenue"] or 0),
+            "top_products_sample": top_products,
+        },
+        "processing_time_sec": round(time.time() - job_start, 2),
+        "finished_at": time.strftime("%H:%M:%S"),
     }
- 
- 
+
 @csrf_exempt
 def run_sales_report_unsafe(request):
-    
+    """
+    BEFORE: No distributed lock is used.
+    If many requests arrive at the same time, all of them can run the same job.
+    """
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
- 
+
     result = _run_heavy_sales_job()
- 
+
     return JsonResponse({
-        "success":   True,
-        "mode":      "unsafe",
+        "success": True,
+        "mode": "unsafe",
         "lock_used": False,
-        "warning":   "No lock! Multiple servers CAN run this job simultaneously.",
+        "lock_acquired": None,
+        "job_status": "started_without_lock",
+        "warning": "No lock is used. Multiple servers can run this job simultaneously.",
         **result,
     })
- 
- 
-# ── AFTER: مع Redis Distributed Lock ─────────────────────────────────────────
+
+
 @csrf_exempt
 def run_sales_report_safe(request):
-    
+    """
+    AFTER: Redis Distributed Lock is used.
+    Only one request can run the job. Other concurrent requests are rejected.
+    """
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
- 
+
     lock = DistributedLock("daily_sales_job", timeout=60)
- 
+
     if not lock.acquire():
         return JsonResponse({
+            "success": False,
+            "mode": "safe",
+            "lock_used": True,
             "lock_acquired": False,
-            "message":       "Job is already running on another server.",
-            "lock_key":      "lock:daily_sales_job",
-            "lock_ttl_sec":  lock.ttl(),
-        }, status=423) 
- 
+            "job_status": "blocked_by_redis_lock",
+            "message": "Job is already running on another server.",
+            "lock_key": "lock:daily_sales_job",
+            "lock_type": "Redis Distributed Lock — NOT a database lock",
+            "lock_ttl_sec": lock.ttl(),
+        }, status=423)
+
     try:
         result = _run_heavy_sales_job()
+
         return JsonResponse({
+            "success": True,
+            "mode": "safe",
+            "lock_used": True,
             "lock_acquired": True,
-            "mode":          "safe",
-            "lock_key":      "lock:daily_sales_job",
-            "lock_type":     "Redis Distributed Lock — NOT a database lock",
+            "job_status": "started_with_redis_lock",
+            "lock_key": "lock:daily_sales_job",
+            "lock_type": "Redis Distributed Lock — NOT a database lock",
             **result,
         })
+
     finally:
-        lock.release()  
- 
- 
+        lock.release()
+
+
 def distributed_lock_status(request):
-    locked = redis_client.exists("lock:daily_sales_job") == 1
+    """
+    Shows whether the Redis distributed lock is currently held.
+    """
+    lock_key = "lock:daily_sales_job"
+    locked = redis_client.exists(lock_key) == 1
+
     return JsonResponse({
-        "lock_key":  "lock:daily_sales_job",
+        "success": True,
+        "lock_key": lock_key,
+        "lock_type": "Redis Distributed Lock — NOT a database lock",
         "is_locked": locked,
-        "ttl_sec":   redis_client.ttl("lock:daily_sales_job") if locked else None,
+        "ttl_sec": redis_client.ttl(lock_key) if locked else None,
     })
