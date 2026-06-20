@@ -15,14 +15,14 @@ class DistributedLock:
     def __init__(self, name: str, timeout: int = 60):
         self.key     = f"lock:{name}"
         self.timeout = timeout
-        self.token   = str(uuid.uuid4())  # unique لكل عملية acquire
+        self.token   = str(uuid.uuid4())  
 
     def acquire(self) -> bool:
         result = redis_client.set(
             self.key,
             self.token,
-            nx=True,          # NX = set only if NOT exists
-            ex=self.timeout,  # EX = auto-expire
+            nx=True,         
+            ex=self.timeout,  
         )
         return result is True
 
